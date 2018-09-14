@@ -8,7 +8,9 @@ class Controller:
     def __init__(self, controller_ip, controller_port):
         self.controller_ip = controller_ip;
         self.controller_port = controller_port
-        self.dockerid_to_port = {}
+        self.containerid_to_interfaceid = {}
+        self.containerid_to_port = {}
+        self.portid = 1
         #logging.basicConfig(filename="Controller.log", level=logging.DEBUG)
 
 
@@ -23,7 +25,9 @@ class Controller:
                 logging.error("Failed to generate containers!")
                 return False
             else:
-                self.dockerid_to_port.setdefault(output, {})
+                self.containerid_to_interfaceid.setdefault(output, {})
+                self.containerid_to_port.setdefault(output, {})
+
         logging.info("Finished generating containers!")
         return True
 
@@ -44,14 +48,14 @@ class Controller:
     def removeDocker(self):
         '''删除Docker容器'''
         logging.info("Start to delete containers!")
-        for dockerid in self.dockerid_to_port.keys():
+        for dockerid in self.containerid_to_interfaceid.keys():
             # 不安全的强制删除
             cmd = 'docker rm -f %s' % dockerid
             (status, output) = subprocess.getstatusoutput(cmd)
             if 1 == status:
                 logging.error("Failed to delete containers!  %s" % output)
                 exit(1)
-            # del(self.dockerid_to_port[dockerid])
+            # del(self.containerid_to_interfaceid[dockerid])
         logging.info("Finished generating containers!")
         return True
 
@@ -66,42 +70,64 @@ class Controller:
             if 1 == status:
                 logging.error("Failed to create Virtual Network! error: %s " % output)
                 exit(1)
+
         logging.info("Finished creating Network Bridge!")
         return True
+
+
+    def setPortId(self):
+        '''根据Interface Id自定义端口号Id'''
+        for containerid in self.containerid_to_interfaceid.keys():
+            cmd = "ovs-vsctl set interface %s ofport_request=%d" \
+                    % (self.containerid_to_interfaceid[containerid], self.portid)
+            (status, output) = subprocess.getstatusoutput(cmd)
+            if 1 == status:
+                logging.error("Failed to set Port Id! error: %s " % output)
+                exit(1)
+            self.containerid_to_port[containerid] = self.portid
+            self.portid = self.portid + 1
+
+        logging.info("Finished set Interfaces' Port Id!")
 
 
     def configContainersNetwork(self):
         '''为已经创建的Docker容器添加网卡，并绑定在ovs端口上'''
         i = 0
         ipList = ['10.0.1.2', '10.0.1.3', '10.0.2.1']
-        for containerid in self.dockerid_to_port.keys():
+        for containerid in self.containerid_to_interfaceid.keys():
             time.sleep(1)
             mac = self.generateRandomMac()
-            cmd = 'ovs-docker add-port vnbr eth0 %s --ipaddress="%s"  --macaddress="%s"' % \
-                  (containerid, ipList[i], mac)
+            cmd = 'ovs-docker add-port vnbr eth0 %s --ipaddress="%s"/24' % (containerid, ipList[i])
             (status, output) = subprocess.getstatusoutput(cmd)
             if 1 == status:
                 logging.error("Failed to configContainerNetwork: %s " % output)
                 exit(1)
-            self.dockerid_to_port[containerid] = mac
+
+            if '' == output:
+                logging.error("Please replace the fixed script 'ovs-docker'")
+                exit(1)
+
+            self.containerid_to_interfaceid[containerid] = output
             i = i + 1
+        self.setPortId()
 
         print("config finished!")
 
+    def connectController(self):
+        '''配置ovs-vsctl连接到controller'''
+        cmd = "ovs-vsctl set-controller vnbr tcp:%s:%d" \
+                % (self.controller_ip, self.controller_port)
+        subprocess.getstatusoutput(cmd)
+
+
+    def main(self):
+        c.createDocker(3)
+        c.createVirtualNetworkBridge()
+        c.configContainersNetwork()
+
+
 
 if "__main__" == __name__:
-    c = Controller('127.0.0.1', 1234)
-
-    c.createDocker(3)
-
-    # time.sleep(30)
-
-    # c.removeDocker()
-
-    c.createVirtualNetworkBridge()
-
-    #print(c.generateRandomMac())
-
-    c.configContainersNetwork()
-
-    print(c.dockerid_to_port)
+    c = Controller('127.0.0.1', 6633)
+    c.main()
+    print(c.containerid_to_interfaceid, c.containerid_to_port)
